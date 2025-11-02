@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+*.spec
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Personal config (contains Discord App ID and personal paths)
+config.yaml
+
+# Startup scripts (contains personal paths)
+start_discord_presence.bat
+start_discord_presence.vbs
+
+# Logs
+*.log
+
+# Build artifacts
+*.exe
+*.dll
+*.pyd

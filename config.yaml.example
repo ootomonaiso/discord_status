@@ -1,0 +1,138 @@
+options:
+  # Discord Developer Portal から取得したアプリケーションID
+  # https://discord.com/developers/applications で作成
+  app_id: "YOUR_DISCORD_APP_ID"
+  restore_last: true
+  https_only_buttons: true
+  afk_idle_sec: 1800  # 30分以上アイドルで「寝落ち」表示
+  
+  # Steamゲームディレクトリ（複数指定可能）
+  # 例: Windows標準パス + 追加ライブラリ
+  steam_library_paths:
+    - "C:\\Program Files (x86)\\Steam\\steamapps\\common"
+    # - "D:\\SteamLibrary\\steamapps\\common"  # 追加ライブラリがあれば
+
+timing:
+  debounce_ms: 3000
+  min_update_sec: 15
+  reconnect_backoff: [1, 2, 5, 10, 20]
+
+presets:
+  # 手動切替用のクイックステータス
+  status_available:
+    details: "参加OK"
+    state: "いつでも声かけてね"
+    assets: { large_image: "status", small_image: "ok" }
+  status_busy:
+    details: "忙しい"
+    state: "参加NG - 集中中"
+    assets: { large_image: "status", small_image: "busy" }
+  status_solo:
+    details: "ひとりで作業中"
+    state: "参加NG - ソロタイム"
+    assets: { large_image: "status", small_image: "solo" }
+  status_afk:
+    details: "寝落ち...?"
+    state: "反応ないかも"
+    assets: { large_image: "sleep", small_image: "afk" }
+  
+  # 自動切替用のプリセット
+  work_vscode:
+    details: "開発中: {workspace}"
+    state: "参加OK"
+    assets: { large_image: "code", small_image: "ok" }
+  meeting:
+    details: "会議中"
+    state: "参加NG"
+    assets: { large_image: "meeting", small_image: "busy" }
+  break_short:
+    details: "ぶらっと隙間時間"
+    state: "参加OK"
+    assets: { large_image: "coffee" }
+  browsing:
+    details: "ネットサーフィン中"
+    state: "参加OK"
+    assets: { large_image: "browser", small_image: "ok" }
+  gaming:
+    details: "ゲーム中: {game_name}"
+    state: "参加NG"
+    assets: { large_image: "game", small_image: "busy" }
+  idle:
+    details: "待機中"
+    state: "参加OK"
+    assets: { large_image: "idle" }
+
+rules:
+  # 最優先: 長時間アイドル（寝落ち検出）
+  - name: afk detection
+    priority: 95
+    when:
+      all:
+        - idle_gte_sec: 1800  # 30分以上
+    set: { preset: "status_afk" }
+
+  - name: meeting apps
+    priority: 90
+    when:
+      any:
+        - app: "Zoom.exe|Teams.exe|ms-teams.exe"
+    set: { preset: "meeting", elapsed: start }
+
+  - name: vscode focus
+    priority: 70
+    when:
+      all:
+        - foreground_app: "Code.exe|Code - Insiders.exe"
+    set:
+      preset: "work_vscode"
+
+  # ゲーム中: Steamライブラリから自動検出（最優先）
+  - name: steam library game
+    priority: 68
+    when:
+      all:
+        - steam_game: true
+    set: { preset: "gaming" }
+
+  # ゲーム中: 既知のゲームプロセス（フォールバック）
+  - name: known game process
+    priority: 65
+    when:
+      any:
+        # FromSoftware
+        - process: "EldenRing\\.exe|sekiro\\.exe|DarkSouls.*\\.exe"
+        # Blizzard
+        - process: "Overwatch\\.exe|Overwatch2\\.exe"
+        # Riot Games
+        - process: "VALORANT.*\\.exe|RiotClient.*\\.exe|League of Legends\\.exe"
+        # Valve
+        - process: "cs2\\.exe|csgo\\.exe|hl2\\.exe|portal.*\\.exe"
+        # Battle Royale
+        - process: "r5apex\\.exe|FortniteClient.*\\.exe|PUBG.*\\.exe"
+        # Minecraft
+        - process: "Minecraft.*\\.exe|javaw.*minecraft.*\\.exe"
+        # その他人気ゲーム
+        - process: "GenshinImpact\\.exe|HonkaiStarRail\\.exe"
+        - process: "RocketLeague\\.exe|FallGuys.*\\.exe"
+        - process: "DeadByDaylight.*\\.exe|AmongUs\\.exe"
+    set: { preset: "gaming" }
+
+  # ブラウザ: アイドル時は休憩扱い
+  - name: browser idle
+    priority: 55
+    when:
+      all:
+        - foreground_app: "chrome.exe|msedge.exe|firefox.exe|brave.exe"
+        - idle_gte_sec: 120  # 2分以上アイドル
+    set: { preset: "break_short" }
+
+  # ブラウザ: アクティブ操作中
+  - name: browser active
+    priority: 50
+    when:
+      all:
+        - foreground_app: "chrome.exe|msedge.exe|firefox.exe|brave.exe"
+    set: { preset: "browsing" }
+
+fallback:
+  preset: "idle"
