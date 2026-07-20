@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import ctypes
+import logging
+import re
 from dataclasses import dataclass
-from typing import Set, Tuple
+from pathlib import Path
+from typing import Dict, List, Optional, Set, Tuple
 
 import psutil
+
+logger = logging.getLogger(__name__)
 # Prefer pywin32 (win32gui/win32process); if it's not available, provide minimal ctypes-based fallbacks
 # so the module can be inspected/used without pywin32 installed.
 try:
@@ -124,130 +129,128 @@ def _detect_game_name(exe_name: str, processes: Set[str]) -> str:
     return ' '.join(word.capitalize() for word in game_name.split())
 
 
+# Steam manifests never change once installed, so cache resolved names to avoid
+# re-globbing and re-reading every .acf file on each snapshot (~2 times/sec).
+_MANIFEST_CACHE: Dict[str, str] = {}
+
+
 def _read_steam_game_name(library_path: str, folder_name: str) -> str:
     """
     Read the actual game name from Steam's appmanifest files.
-    
+
     Args:
         library_path: Path to Steam library (e.g., "C:\\Program Files (x86)\\Steam\\steamapps\\common")
         folder_name: Game folder name (e.g., "ELDEN RING")
-    
+
     Returns:
-        Official game name from Steam manifest, or folder name if not found
+        Official game name from Steam manifest, or folder name if not found.
     """
-    from pathlib import Path
-    import re
-    
-    # The manifest files are in the parent directory (steamapps)
+    cache_key = f"{library_path}::{folder_name}"
+    cached = _MANIFEST_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    # The manifest files are in the parent directory (steamapps).
     steamapps_dir = Path(library_path).parent
-    
+    resolved = folder_name  # Fallback: the folder name itself.
+
     try:
-        # Look for appmanifest files
         for manifest_file in steamapps_dir.glob("appmanifest_*.acf"):
             try:
-                content = manifest_file.read_text(encoding='utf-8', errors='ignore')
-                
-                # Extract installdir and name from ACF format
+                content = manifest_file.read_text(encoding="utf-8", errors="ignore")
                 installdir_match = re.search(r'"installdir"\s+"([^"]+)"', content)
                 name_match = re.search(r'"name"\s+"([^"]+)"', content)
-                
-                if installdir_match and name_match:
-                    installdir = installdir_match.group(1)
-                    game_name = name_match.group(1)
-                    
-                    # Check if this manifest matches our folder
-                    if installdir.lower() == folder_name.lower():
-                        print(f"[DEBUG] ✅ マッチ発見: {folder_name} -> {game_name}")
-                        return game_name
-            except Exception as e:
-                print(f"[DEBUG] マニフェスト読み取りエラー: {e}")
+                if (
+                    installdir_match
+                    and name_match
+                    and installdir_match.group(1).lower() == folder_name.lower()
+                ):
+                    resolved = name_match.group(1)
+                    logger.debug("マッチ発見: %s -> %s", folder_name, resolved)
+                    break
+            except Exception as exc:
+                logger.debug("マニフェスト読み取りエラー: %s", exc)
                 continue
-    except Exception as e:
-        print(f"[DEBUG] Steamapps検索エラー: {e}")
-        pass
-    
-    print(f"[DEBUG] ⚠️ マニフェストが見つかりませんでした。フォルダ名を使用: {folder_name}")
-    # Fallback: return folder name
-    return folder_name
+    except Exception as exc:
+        logger.debug("Steamapps検索エラー: %s", exc)
+
+    if resolved == folder_name:
+        logger.debug("マニフェストが見つかりません。フォルダ名を使用: %s", folder_name)
+
+    _MANIFEST_CACHE[cache_key] = resolved
+    return resolved
 
 
-def detect_steam_games(steam_paths: list, running_processes: Set[str]) -> tuple[bool, str]:
+# Steam background processes that live inside the library but are not games.
+_STEAM_HELPER_MARKERS = (
+    "steamwebhelper",
+    "steamerrorreporter",
+    "steamservice",
+    "gameoverlayui",
+    "crashhandler",
+)
+
+
+def detect_steam_games(steam_paths: List[str], running_processes: Set[str]) -> Tuple[bool, str]:
     """
-    Detect if any Steam games are running by checking processes against Steam library paths.
-    Reads actual game names from Steam manifest files.
-    
+    Detect whether a Steam game is running by matching process executables against
+    Steam library folders, then resolve the display name from the Steam manifest.
+
     Returns:
-        (is_gaming, game_name): Tuple of whether a game is detected and its name
+        (is_gaming, game_name): whether a game was detected and its name.
     """
-    from pathlib import Path
-    
     if not steam_paths:
         return False, ""
-    
-    # Collect all game folders from Steam libraries with their library path
-    game_folders = []  # List of (Path, library_path_str) tuples
+
+    # Map each installed game folder to the library it belongs to.
+    game_folders: Dict[Path, str] = {}
     for lib_path in steam_paths:
         lib_dir = Path(lib_path)
         if not lib_dir.exists():
             continue
-        
         try:
-            # List all subdirectories (each is a game folder)
             for game_dir in lib_dir.iterdir():
                 if game_dir.is_dir():
-                    game_folders.append((game_dir, lib_path))
+                    game_folders[game_dir] = lib_path
         except Exception:
             continue
-    
-    # Check if any running process is in a game folder
-    for proc_name in running_processes:
-        # Get process details
+
+    if not game_folders:
+        return False, ""
+
+    # Walk the process table once and check each executable against the folders.
+    try:
+        processes = list(psutil.process_iter(["name", "exe"]))
+    except Exception:
+        return False, ""
+
+    for proc in processes:
         try:
-            for proc in psutil.process_iter(['name', 'exe']):
-                if proc.info['name'] != proc_name:
-                    continue
-                
-                try:
-                    exe_path = proc.info.get('exe')
-                    if not exe_path:
-                        continue
-                    
-                    proc_path = Path(exe_path)
-                    
-                    # Check if this process is in any Steam game folder
-                    for game_folder, library_path in game_folders:
-                        try:
-                            # Check if process is in this game folder or subfolder
-                            if game_folder in proc_path.parents or proc_path.parent == game_folder:
-                                # Found a Steam game!
-                                print(f"[DEBUG] Steamゲーム検出: プロセス={proc_name}, パス={proc_path}")
-                                print(f"[DEBUG] ゲームフォルダ: {game_folder}")
-                                
-                                # Exclude Steam helper processes
-                                if any(helper in proc_name.lower() for helper in [
-                                    'steamwebhelper', 'steamerrorreporter', 'steamservice',
-                                    'gameoverlayui', 'steamwebhelper', 'crashhandler'
-                                ]):
-                                    print(f"[DEBUG] ⏭️ Steamヘルパープロセスをスキップ: {proc_name}")
-                                    continue
-                                
-                                # Read the actual game name from Steam manifest
-                                folder_name = game_folder.name
-                                game_name = _read_steam_game_name(library_path, folder_name)
-                                
-                                print(f"[DEBUG] 🎮 最終ゲーム名: {game_name}")
-                                return True, game_name
-                        except Exception:
-                            continue
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    continue
+            name = (proc.info.get("name") or "").strip()
+            if not name or name not in running_processes:
+                continue
+            if any(marker in name.lower() for marker in _STEAM_HELPER_MARKERS):
+                continue
+
+            exe_path = proc.info.get("exe")
+            if not exe_path:
+                continue
+            proc_path = Path(exe_path)
+
+            for game_folder, library_path in game_folders.items():
+                if proc_path.parent == game_folder or game_folder in proc_path.parents:
+                    game_name = _read_steam_game_name(library_path, game_folder.name)
+                    logger.debug("Steamゲーム検出: %s (%s) -> %s", name, proc_path, game_name)
+                    return True, game_name
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
         except Exception:
             continue
-    
+
     return False, ""
 
 
-def take_snapshot(steam_paths: list = None) -> Snapshot:
+def take_snapshot(steam_paths: Optional[List[str]] = None) -> Snapshot:
     exe, title = _get_foreground_info()
     names: Set[str] = set()
     try:

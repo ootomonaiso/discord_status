@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any, Dict, List, Optional
 
 from pypresence import Presence
+
+logger = logging.getLogger(__name__)
 
 
 class RPCClient:
@@ -26,7 +29,8 @@ class RPCClient:
             self.rpc.connect()
             self.connected = True
             return True
-        except Exception:
+        except Exception as exc:
+            logger.debug("RPC 接続に失敗: %s", exc)
             self.connected = False
             self.rpc = None
             return False
