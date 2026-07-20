@@ -4,6 +4,7 @@ options:
   app_id: "YOUR_DISCORD_APP_ID"
   restore_last: true
   https_only_buttons: true
+  debug: false  # true にすると Steam検出/RPC の詳細ログを出力
   afk_idle_sec: 1800  # 30分以上アイドルで「寝落ち」表示
   
   # Steamゲームディレクトリ（複数指定可能）

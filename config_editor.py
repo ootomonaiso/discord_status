@@ -49,10 +49,17 @@ class ConfigEditor:
 
     def save_config(self) -> None:
         """Save configuration to file."""
+        # Pull the latest widget values from every tab first. Without this the
+        # 基本設定/タイミング tabs would only sync on window close, so clicking
+        # 保存 would silently write stale values.
+        if hasattr(self, "_update_basic"):
+            self._update_basic()
+        if hasattr(self, "_update_timing"):
+            self._update_timing()
         try:
             with self.config_path.open("w", encoding="utf-8") as f:
                 yaml.dump(self.config, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
-            messagebox.showinfo("成功", "設定を保存しました")
+            messagebox.showinfo("成功", "設定を保存しました。\n起動中のアプリには自動で反映されます (再起動不要)。")
         except Exception as e:
             messagebox.showerror("エラー", f"設定の保存に失敗しました:\n{e}")
 
@@ -116,12 +123,28 @@ class ConfigEditor:
             foreground="gray",
         ).pack(anchor=tk.W, padx=10, pady=5)
 
+        # Steam library paths
+        ttk.Label(parent, text="Steamライブラリパス (1行に1つ):", font=("", 10, "bold")).pack(
+            anchor=tk.W, padx=10, pady=(20, 5)
+        )
+        steam_text = tk.Text(parent, width=70, height=4)
+        steam_text.pack(anchor=tk.W, padx=10, pady=5, fill=tk.X)
+        steam_text.insert("1.0", "\n".join(options.get("steam_library_paths", []) or []))
+        ttk.Label(
+            parent,
+            text="例: C:\\Program Files (x86)\\Steam\\steamapps\\common\nゲーム実行中の自動検出に使います。",
+            foreground="gray",
+        ).pack(anchor=tk.W, padx=10, pady=5)
+
         # Checkboxes
         restore_var = tk.BooleanVar(value=options.get("restore_last", True))
-        ttk.Checkbutton(parent, text="起動時に前回の状態を復元", variable=restore_var).pack(anchor=tk.W, padx=10, pady=10)
+        ttk.Checkbutton(parent, text="起動時に前回の状態を復元", variable=restore_var).pack(anchor=tk.W, padx=10, pady=(15, 5))
 
         https_var = tk.BooleanVar(value=options.get("https_only_buttons", True))
         ttk.Checkbutton(parent, text="ボタンURLをHTTPSのみに制限", variable=https_var).pack(anchor=tk.W, padx=10, pady=5)
+
+        debug_var = tk.BooleanVar(value=options.get("debug", False))
+        ttk.Checkbutton(parent, text="詳細ログを出力 (debug)", variable=debug_var).pack(anchor=tk.W, padx=10, pady=5)
 
         # Save to config
         def update_options():
@@ -129,7 +152,10 @@ class ConfigEditor:
             self.config["options"]["app_id"] = app_id_var.get()
             self.config["options"]["restore_last"] = restore_var.get()
             self.config["options"]["https_only_buttons"] = https_var.get()
+            self.config["options"]["debug"] = debug_var.get()
             self.config["options"]["afk_idle_sec"] = afk_var.get()
+            paths = [line.strip() for line in steam_text.get("1.0", tk.END).splitlines() if line.strip()]
+            self.config["options"]["steam_library_paths"] = paths
 
         self.root.protocol("WM_DELETE_WINDOW", lambda: (update_options(), self.root.quit()))
 

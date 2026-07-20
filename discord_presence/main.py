@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import signal
 import sys
 import time
@@ -15,15 +16,26 @@ if __name__ == "__main__" and __package__ is None:
     import os
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
     from discord_presence.rpc_client import RPCClient
-    from discord_presence.rules import RuleEngine
+    from discord_presence.rules import RuleEngine, _apply_template
     from discord_presence.sensors import take_snapshot
     from discord_presence.tray import TrayIcon
 else:
     # Module execution: use relative imports
     from .rpc_client import RPCClient
-    from .rules import RuleEngine
+    from .rules import RuleEngine, _apply_template
     from .sensors import take_snapshot
     from .tray import TrayIcon
+
+logger = logging.getLogger(__name__)
+
+
+def _basic_logging(debug: bool) -> None:
+    """Configure root logging once. DEBUG surfaces sensor/RPC diagnostics."""
+    logging.basicConfig(
+        level=logging.DEBUG if debug else logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%H:%M:%S",
+    )
 
 
 def load_config(path: Path) -> Dict[str, Any]:
@@ -57,30 +69,35 @@ def main() -> None:
     
     cfg_path = base / "config.yaml"
     if not cfg_path.exists():
-        print(f"[エラー] config.yaml が見つかりません: {cfg_path}")
+        _basic_logging(False)
+        logger.error("config.yaml が見つかりません: %s", cfg_path)
         sys.exit(1)
 
     cfg = load_config(cfg_path)
-    app_id = str(cfg.get("options", {}).get("app_id") or "").strip()
+    options = cfg.get("options", {})
+
+    _basic_logging(bool(options.get("debug", False)))
+
+    app_id = str(options.get("app_id") or "").strip()
     if not app_id or app_id == "YOUR_DISCORD_APP_ID":
-        print("[エラー] config.yaml の options.app_id を設定してください。")
+        logger.error("config.yaml の options.app_id を設定してください。")
         sys.exit(1)
 
     timing = cfg.get("timing", {})
     debounce_ms = int(timing.get("debounce_ms", 3000))
     min_update_sec = int(timing.get("min_update_sec", 15))
     backoff_seq = list(timing.get("reconnect_backoff", [1, 2, 5, 10, 20]))
-    
+
     # AFK detection threshold
-    afk_idle_sec = int(cfg.get("options", {}).get("afk_idle_sec", 1800))
-    print(f"[情報] 寝落ち検出: {afk_idle_sec}秒 ({afk_idle_sec // 60}分) 以上のアイドルで表示")
-    
+    afk_idle_sec = int(options.get("afk_idle_sec", 1800))
+    logger.info("寝落ち検出: %d秒 (%d分) 以上のアイドルで表示", afk_idle_sec, afk_idle_sec // 60)
+
     # Steam library paths for game detection
-    steam_paths = cfg.get("options", {}).get("steam_library_paths", [])
+    steam_paths = options.get("steam_library_paths", [])
     if steam_paths:
-        print(f"[情報] Steamライブラリパス: {len(steam_paths)}個設定済み")
+        logger.info("Steamライブラリパス: %d個設定済み", len(steam_paths))
         for path in steam_paths:
-            print(f"  - {path}")
+            logger.info("  - %s", path)
 
     engine = RuleEngine(cfg)
     rpc = RPCClient(app_id)
@@ -114,34 +131,46 @@ def main() -> None:
         auto_mode = not auto_mode
         if auto_mode:
             manual_preset = None
-            print("[情報] 自動モードを有効にしました")
+            logger.info("自動モードを有効にしました")
         else:
-            print("[情報] 自動モードを無効にしました")
+            logger.info("自動モードを無効にしました")
+
+    def on_auto() -> None:
+        """Force automatic mode (used by the tray '自動検出' item)."""
+        nonlocal auto_mode, manual_preset
+        auto_mode = True
+        manual_preset = None
+        logger.info("自動モードを有効にしました")
 
     def on_preset_select(preset_name: str) -> None:
         nonlocal auto_mode, manual_preset
         auto_mode = False
         manual_preset = preset_name
-        print(f"[情報] 手動でプリセット '{preset_name}' を選択しました")
+        logger.info("手動でプリセット '%s' を選択しました", preset_name)
 
     def on_status_select(status: str) -> None:
         """Set manual status override (available/busy/solo/auto)"""
         nonlocal manual_status
         if status == "auto":
             manual_status = None
-            print("[情報] ステータスを自動に設定しました")
+            logger.info("ステータスを自動に設定しました")
         else:
             manual_status = status
             status_names = {
                 "available": "参加OK",
                 "busy": "忙しい",
-                "solo": "ひとりで"
+                "solo": "ひとりで",
             }
-            print(f"[情報] ステータスを '{status_names.get(status, status)}' に設定しました")
+            logger.info("ステータスを '%s' に設定しました", status_names.get(status, status))
 
-    def get_status() -> tuple[bool, str, str]:
-        status_info = f"{last_rule or '未初期化'} | ステータス: {manual_status or '自動'}"
-        return (auto_mode, status_info, last_preset or "なし")
+    def get_status() -> Dict[str, Any]:
+        return {
+            "auto": auto_mode,
+            "rule": last_rule or "未初期化",
+            "preset": last_preset or "なし",
+            "manual_status": manual_status,
+            "manual_preset": manual_preset,
+        }
 
     def on_open_config() -> None:
         """Open config editor in a subprocess."""
@@ -158,25 +187,51 @@ def main() -> None:
                 )
             else:
                 subprocess.Popen([python_exe, str(config_editor_path)])
-            print("[情報] 設定エディタを起動しました")
+            logger.info("設定エディタを起動しました")
         except Exception as e:
-            print(f"[エラー] 設定エディタの起動に失敗: {e}")
+            logger.error("設定エディタの起動に失敗: %s", e)
 
     # Start tray icon
     try:
-        tray = TrayIcon(on_quit, on_toggle_auto, on_preset_select, get_status, on_open_config, on_status_select)
+        tray = TrayIcon(on_quit, on_toggle_auto, on_preset_select, get_status, on_open_config, on_status_select, on_auto)
         tray_thread = tray.run_detached()
-        print("[情報] タスクトレイアイコンを起動しました")
+        logger.info("タスクトレイアイコンを起動しました")
     except Exception as e:
-        print(f"[警告] タスクトレイアイコンの起動に失敗: {e}")
-        print("[情報] コンソールモードで続行します。Ctrl+C で終了してください。")
+        logger.warning("タスクトレイアイコンの起動に失敗: %s", e)
+        logger.info("コンソールモードで続行します。Ctrl+C で終了してください。")
         tray = None
 
-    print("[情報] 前面アプリとアイドル時間の監視を開始しました")
+    logger.info("前面アプリとアイドル時間の監視を開始しました")
+
+    try:
+        cfg_mtime = cfg_path.stat().st_mtime
+    except OSError:
+        cfg_mtime = 0.0
 
     while not shutting_down:
+        # Hot-reload config when the file changes (e.g. saved from the editor),
+        # so edits take effect without restarting the daemon.
+        try:
+            current_mtime = cfg_path.stat().st_mtime
+        except OSError:
+            current_mtime = cfg_mtime
+        if current_mtime != cfg_mtime:
+            cfg_mtime = current_mtime
+            try:
+                cfg = load_config(cfg_path)
+                options = cfg.get("options", {})
+                engine = RuleEngine(cfg)
+                steam_paths = options.get("steam_library_paths", [])
+                timing = cfg.get("timing", {})
+                debounce_ms = int(timing.get("debounce_ms", 3000))
+                min_update_sec = int(timing.get("min_update_sec", 15))
+                last_payload = None  # Force a fresh push with the new settings.
+                logger.info("設定を再読み込みしました")
+            except Exception as exc:
+                logger.error("設定の再読み込みに失敗: %s", exc)
+
         snapshot = take_snapshot(steam_paths)
-        
+
         # Determine which preset to use for activity
         if auto_mode:
             # Automatic mode: use rule engine
@@ -195,27 +250,9 @@ def main() -> None:
                     "workspace": "",
                     "idle_sec": snapshot.idle_sec,
                 }
-                # Build presence from manual preset - import at top level
-                # Note: _apply_template is already imported via rules module
-                try:
-                    if __package__ is None:
-                        from discord_presence.rules import _apply_template
-                    else:
-                        from .rules import _apply_template  # type: ignore
-                except ImportError:
-                    def _apply_template(s, ctx):  # type: ignore
-                        if s is None:
-                            return None
-                        try:
-                            return s.format_map({k: ("" if v is None else v) for k, v in ctx.items()})
-                        except Exception:
-                            return s
-                
-                details = _apply_template(preset_data.get("details"), context)
-                state = _apply_template(preset_data.get("state"), context)
                 candidate = {
-                    "details": details,
-                    "state": state,
+                    "details": _apply_template(preset_data.get("details"), context),
+                    "state": _apply_template(preset_data.get("state"), context),
                     "assets": preset_data.get("assets"),
                     "buttons": preset_data.get("buttons"),
                 }
@@ -260,7 +297,7 @@ def main() -> None:
         if not rpc.connect():
             wait = backoff_seq[min(backoff_idx, len(backoff_seq) - 1)]
             backoff_idx += 1
-            print(f"[警告] Discord RPC に接続できません。{wait}秒後に再試行します。")
+            logger.warning("Discord RPC に接続できません。%d秒後に再試行します。", wait)
             time.sleep(wait)
             continue
 
@@ -272,22 +309,23 @@ def main() -> None:
             if rpc.update(candidate):
                 last_payload = candidate
                 last_sent_ts = time.time()
-                print(
-                    f"[情報] 更新: ルール={current_rule} プリセット={current_preset} "
-                    f"details={candidate.get('details')!r} state={candidate.get('state')!r}"
+                logger.info(
+                    "更新: ルール=%s プリセット=%s details=%r state=%r",
+                    current_rule, current_preset,
+                    candidate.get("details"), candidate.get("state"),
                 )
             else:
-                print("[警告] Presence の更新に失敗しました。再試行します。")
+                logger.warning("Presence の更新に失敗しました。再試行します。")
 
         time.sleep(0.5)
 
-    print("[情報] 終了処理中: Presence をクリアします。")
+    logger.info("終了処理中: Presence をクリアします。")
     try:
         rpc.clear()
     finally:
         if tray:
             tray.stop()
-        print("[情報] 終了しました。")
+        logger.info("終了しました。")
 
 
 if __name__ == "__main__":
