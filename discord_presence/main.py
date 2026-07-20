@@ -7,6 +7,7 @@ import logging
 import signal
 import sys
 import time
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -29,13 +30,40 @@ else:
 logger = logging.getLogger(__name__)
 
 
-def _basic_logging(debug: bool) -> None:
-    """Configure root logging once. DEBUG surfaces sensor/RPC diagnostics."""
+def _basic_logging(debug: bool, log_path: Optional[Path] = None) -> None:
+    """Configure logging once. DEBUG surfaces our own sensor/RPC diagnostics
+    without drowning in third-party (PIL/asyncio) debug spam. When log_path is
+    given, also write to a rotating file so the windowed exe leaves a trail."""
     logging.basicConfig(
-        level=logging.DEBUG if debug else logging.INFO,
+        level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%H:%M:%S",
     )
+    if debug:
+        # Only elevate our own loggers; "__main__" covers the frozen entrypoint.
+        for name in ("discord_presence", "__main__"):
+            logging.getLogger(name).setLevel(logging.DEBUG)
+        for noisy in ("PIL", "asyncio", "pystray"):
+            logging.getLogger(noisy).setLevel(logging.WARNING)
+
+    if log_path is not None:
+        root = logging.getLogger()
+        already = any(
+            isinstance(h, RotatingFileHandler) and getattr(h, "_dp_log", False)
+            for h in root.handlers
+        )
+        if not already:
+            try:
+                fh = RotatingFileHandler(
+                    log_path, maxBytes=1_000_000, backupCount=2, encoding="utf-8"
+                )
+                fh.setFormatter(logging.Formatter(
+                    "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+                ))
+                fh._dp_log = True  # type: ignore[attr-defined]
+                root.addHandler(fh)
+            except Exception:
+                pass  # File logging is best-effort; never block startup.
 
 
 def load_config(path: Path) -> Dict[str, Any]:
@@ -82,16 +110,17 @@ def main() -> None:
         _open_editor(base)
         return
 
+    log_path = base / "discord_presence.log"
     cfg_path = base / "config.yaml"
     if not cfg_path.exists():
-        _basic_logging(False)
+        _basic_logging(False, log_path)
         logger.error("config.yaml が見つかりません: %s", cfg_path)
         sys.exit(1)
 
     cfg = load_config(cfg_path)
     options = cfg.get("options", {})
 
-    _basic_logging(bool(options.get("debug", False)))
+    _basic_logging(bool(options.get("debug", False)), log_path)
 
     app_id = str(options.get("app_id") or "").strip()
     if not app_id or app_id == "YOUR_DISCORD_APP_ID":
