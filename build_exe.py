@@ -15,6 +15,8 @@ PyInstaller.__main__.run([
     '--windowed',
     '--icon=NONE',
     f'--add-data={base_dir / "config.yaml"};.',
+    # Make the project root importable so config_editor can be bundled.
+    f'--paths={base_dir}',
     '--hidden-import=pystray',
     '--hidden-import=PIL',
     '--hidden-import=pypresence',
@@ -23,6 +25,9 @@ PyInstaller.__main__.run([
     '--hidden-import=win32process',
     '--hidden-import=win32api',
     '--hidden-import=yaml',
+    # config_editor doubles as the '--config' GUI entry inside the single exe.
+    '--hidden-import=config_editor',
+    '--hidden-import=tkinter',
     '--collect-all=pystray',
     '--collect-all=PIL',
     '--noconfirm',

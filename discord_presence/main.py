@@ -58,6 +58,16 @@ def presence_to_dict(spec) -> Dict[str, Any]:
     }
 
 
+def _open_editor(base: Path) -> None:
+    """Launch the config editor GUI (used for the bundled '--config' entry)."""
+    _basic_logging(False)
+    try:
+        from config_editor import ConfigEditor
+    except Exception:  # pragma: no cover - depends on bundling/path
+        from ..config_editor import ConfigEditor  # type: ignore
+    ConfigEditor(base / "config.yaml").run()
+
+
 def main() -> None:
     # When running as a PyInstaller bundle, use the executable's directory
     if getattr(sys, 'frozen', False):
@@ -66,7 +76,12 @@ def main() -> None:
     else:
         # Running as script
         base = Path(__file__).resolve().parent.parent
-    
+
+    # Allow the single bundled exe to double as the config editor launcher.
+    if "--config" in sys.argv:
+        _open_editor(base)
+        return
+
     cfg_path = base / "config.yaml"
     if not cfg_path.exists():
         _basic_logging(False)
@@ -176,17 +191,17 @@ def main() -> None:
         """Open config editor in a subprocess."""
         import subprocess
         import os
-        config_editor_path = base / "config_editor.py"
-        python_exe = sys.executable
+        if getattr(sys, "frozen", False):
+            # The bundled exe launches itself with --config to show the editor.
+            cmd = [sys.executable, "--config"]
+        else:
+            cmd = [sys.executable, str(base / "config_editor.py")]
         try:
             # Use CREATE_NO_WINDOW flag on Windows to avoid showing console
             if os.name == "nt":
-                subprocess.Popen(
-                    [python_exe, str(config_editor_path)],
-                    creationflags=subprocess.CREATE_NO_WINDOW,
-                )
+                subprocess.Popen(cmd, creationflags=subprocess.CREATE_NO_WINDOW)
             else:
-                subprocess.Popen([python_exe, str(config_editor_path)])
+                subprocess.Popen(cmd)
             logger.info("設定エディタを起動しました")
         except Exception as e:
             logger.error("設定エディタの起動に失敗: %s", e)
