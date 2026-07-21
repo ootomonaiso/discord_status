@@ -84,6 +84,18 @@ class RuleEngine:
         self.rules: List[Dict[str, Any]] = cfg.get("rules", [])
         self.fallback: Dict[str, Any] = cfg.get("fallback", {"preset": "idle"})
         self.https_only = bool(_safe_get(cfg, "options.https_only_buttons", True))
+        # User-defined exe -> display-name catalog for tracking extra apps.
+        # e.g. {"obs64.exe": "OBS Studio"}. Keys are treated as regex.
+        self.apps: Dict[str, Any] = cfg.get("apps", {}) or {}
+
+    def _match_app(self, exe: str) -> Optional[str]:
+        """Return the display name if the foreground exe is a tracked app."""
+        if not exe:
+            return None
+        for pattern, label in self.apps.items():
+            if _match_regex(str(pattern), exe):
+                return str(label)
+        return None
 
     def evaluate(self, snap: Snapshot) -> RuleResult:
         # Prioritize Steam detection if available
@@ -111,6 +123,7 @@ class RuleEngine:
             "workspace": _infer_workspace(snap.window_title),
             "idle_sec": snap.idle_sec,
             "game_name": game_name or "不明",
+            "app_name": self._match_app(snap.foreground_exe) or "不明",
         }
 
         ordered_rules = sorted(self.rules, key=lambda r: r.get("priority", 0), reverse=True)
@@ -153,6 +166,10 @@ class RuleEngine:
         if "steam_game" in cond:
             # Check if a Steam game is running
             return bool(cond.get("steam_game")) == snap.is_steam_game
+        if "tracked_app" in cond:
+            # True when the foreground exe is registered under `apps:`.
+            matched = self._match_app(snap.foreground_exe) is not None
+            return bool(cond.get("tracked_app")) == matched
         return False
 
     def _build_presence(

@@ -62,6 +62,11 @@ presets:
     details: "待機中"
     state: "参加OK"
     assets: { large_image: "idle" }
+  # apps: に登録した追跡アプリ用（{app_name} に表示名が入る）
+  app_generic:
+    details: "{app_name} を使用中"
+    state: "参加OK"
+    assets: { large_image: "app" }
 
 rules:
   # 最優先: 長時間アイドル（寝落ち検出）
@@ -135,5 +140,21 @@ rules:
         - foreground_app: "chrome.exe|msedge.exe|firefox.exe|brave.exe"
     set: { preset: "browsing" }
 
+  # 追跡アプリ: apps: に登録した exe を前面にしている時（{app_name} を表示）
+  - name: tracked app
+    priority: 45
+    when:
+      all:
+        - tracked_app: true
+    set: { preset: "app_generic" }
+
 fallback:
   preset: "idle"
+
+# 追跡したいアプリを exe名 -> 表示名 で登録（正規表現可）
+# ここに1行足すだけで「○○ を使用中」と表示されます
+apps:
+  obs64.exe: "OBS Studio"
+  Photoshop.exe: "Photoshop"
+  blender.exe: "Blender"
+  Notion.exe: "Notion"
